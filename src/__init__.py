@@ -6,7 +6,7 @@ class SendToZoteroPlugin(InterfaceActionBase):
     description         = '通过本地 Debug Bridge 将书籍链接到 Zotero'
     supported_platforms = ['windows', 'osx', 'linux']
     author              = 'Gemini User'
-    version             = (1, 1, 0)
+    version             = (1, 1, 1)
     minimum_calibre_version = (5, 0, 0)
 
     # --- 关键配置 ---

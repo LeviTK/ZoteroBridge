@@ -112,13 +112,13 @@ class ZoteroAction(InterfaceAction):
                 creators_list.append({"firstName": "", "lastName": author})
                 
         js_creators_json = json.dumps(creators_list)
-        # 将 title, isbn 和 file_path 也用 json 转义，避免注入漏洞或语法错误，截取掉 dumps 生成的头尾双引号
-        js_title = json.dumps(title)[1:-1]
-        js_isbn = json.dumps(isbn)[1:-1]
-        js_file_path = json.dumps(file_path)[1:-1]
+        # 将 title, isbn 和 file_path 也用 json 转义，生成完整的带双引号字符串，避免注入漏洞或语法错误
+        js_title = json.dumps(title)
+        js_isbn = json.dumps(isbn)
+        js_file_path = json.dumps(file_path)
         
-        js_zotero_tag = json.dumps(prefs['ZOTERO_TAG'])[1:-1]
-        js_zotero_collection = json.dumps(prefs['ZOTERO_COLLECTION'])[1:-1]
+        js_zotero_tag = json.dumps(prefs['ZOTERO_TAG'])
+        js_zotero_collection = json.dumps(prefs['ZOTERO_COLLECTION'])
 
         # 读取模板并替换占位符
         js_template = self._get_js_template()

@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2024-02-20
+### Fixed
+- Fixed JS syntax error when metadata (title, collection, tag) contains single quotes (e.g. `O'Reilly`).
+
 ## [1.1.0] - 2024-02-20
 ### Added
 - Added Configuration GUI (via `config.py`) to manage API and tag preferences.
