@@ -1,23 +1,29 @@
 import urllib.request
 import urllib.error
 import json
+import os
 from calibre.gui2.actions import InterfaceAction
 from calibre.gui2 import error_dialog, info_dialog
-
-# --- 你的配置 ---
-ZOTERO_PASS = 'CTT'  # 必须与 Zotero 配置一致
-BRIDGE_URL  = 'http://127.0.0.1:23119/debug-bridge/execute'
-ZOTERO_COLLECTION = '书籍'  # Zotero 中的目标文件夹名
-ZOTERO_TAG = 'Calibre'  # Zotero 中的标签
-CALIBRE_TAG = 'zotero'  # Calibre 中的标签
+from calibre_plugins.zotero_bridge.config import prefs
 
 class ZoteroAction(InterfaceAction):
     name = 'Send to Zotero Bridge'
     
-    action_spec = ('Send to Zotero', None, 'Link PDF to Zotero Locally', None)
+    action_spec = ('Send to Zotero', None, 'Link Book to Zotero Locally', None)
 
     def genesis(self):
         self.qaction.triggered.connect(self.run)
+
+    def _get_js_template(self):
+        # 优先使用 Calibre 的 get_resources 从 zip 中读取资源
+        try:
+            from calibre_plugins.zotero_bridge import get_resources
+            return get_resources('zotero_script.js').decode('utf-8')
+        except Exception:
+            # 回退到本地文件系统读取 (供开发调试时使用)
+            js_path = os.path.join(os.path.dirname(__file__), 'zotero_script.js')
+            with open(js_path, 'r', encoding='utf-8') as f:
+                return f.read()
 
     def run(self):
         rows = self.gui.library_view.selectionModel().selectedRows()
@@ -25,6 +31,7 @@ class ZoteroAction(InterfaceAction):
             return info_dialog(self.gui, '提示', '请选择一本书', show=True)
 
         db = self.gui.current_db
+        errors = []
         
         for row in rows:
             book_id = db.id(row.row())
@@ -34,25 +41,41 @@ class ZoteroAction(InterfaceAction):
             isbn = mi.isbn if mi.isbn else ""
             authors = mi.authors
 
-            if db.has_format(book_id, 'PDF', index_is_id=True):
-                pdf_path = db.format_abspath(book_id, 'PDF', index_is_id=True)
-            else:
-                print(f"书籍 {title} 没有 PDF，跳过")
+            # 支持的格式列表，按优先级排序
+            supported_formats = ['PDF', 'EPUB', 'AZW3', 'MOBI']
+            file_path = None
+            
+            for fmt in supported_formats:
+                if db.has_format(book_id, fmt, index_is_id=True):
+                    file_path = db.format_abspath(book_id, fmt, index_is_id=True)
+                    break
+
+            if not file_path:
+                msg = f"书籍 '{title}' 没有找到支持的文件格式 ({', '.join(supported_formats)})，跳过"
+                print(msg)
+                errors.append(msg)
                 continue
 
             try:
-                item_key = self.send_command(title, authors, isbn, pdf_path)
+                item_key = self.send_command(title, authors, isbn, file_path)
                 print(f"成功发送: {title}, Zotero Key: {item_key}")
                 
                 if item_key:
                     self.update_calibre_metadata(db, book_id, mi, title, item_key)
                     
             except Exception as e:
-                error_dialog(self.gui, '通信错误', str(e), show=True)
-                break
+                msg = f"处理 '{title}' 时发生错误: {str(e)}"
+                print(msg)
+                errors.append(msg)
+                continue
 
         self.gui.library_view.model().refresh()
-        info_dialog(self.gui, '完成', '处理完毕', show=True)
+        
+        if errors:
+            error_msg = "\n".join(errors)
+            error_dialog(self.gui, '部分完成(有错误)', error_msg, show=True)
+        else:
+            info_dialog(self.gui, '完成', '处理完毕', show=True)
 
     def update_calibre_metadata(self, db, book_id, mi, title, item_key):
         """更新 Calibre 书籍元数据：添加 Zotero 链接和标签"""
@@ -68,81 +91,51 @@ class ZoteroAction(InterfaceAction):
             mi.comments = new_comments
         
         current_tags = list(mi.tags) if mi.tags else []
-        if CALIBRE_TAG not in current_tags:
-            current_tags.append(CALIBRE_TAG)
+        calibre_tag = prefs['CALIBRE_TAG']
+        if calibre_tag not in current_tags:
+            current_tags.append(calibre_tag)
+            # Calibre API 要求修改元数据时最好赋值为 tuple 或者直接更新，但对于 tags 列表来说，标准做法是这样
             mi.tags = current_tags
         
         db.set_metadata(book_id, mi, set_title=False, set_authors=False)
 
-    def send_command(self, title, authors, isbn, pdf_path):
+    def send_command(self, title, authors, isbn, file_path):
         """构建 JS 并发送给 Zotero"""
         
-        # 1. 数据清洗 (非常重要：防止 JS 语法错误)
-        # Windows 路径: C:\Book -> C:\\Book
-        js_pdf_path = pdf_path.replace('\\', '\\\\')
+        # 处理作者列表，尝试拆分 firstName 和 lastName
+        creators_list = []
+        for author in authors:
+            parts = author.split(' ', 1)
+            if len(parts) > 1:
+                creators_list.append({"firstName": parts[0], "lastName": parts[1]})
+            else:
+                creators_list.append({"firstName": "", "lastName": author})
+                
+        js_creators_json = json.dumps(creators_list)
+        # 将 title, isbn 和 file_path 也用 json 转义，避免注入漏洞或语法错误，截取掉 dumps 生成的头尾双引号
+        js_title = json.dumps(title)[1:-1]
+        js_isbn = json.dumps(isbn)[1:-1]
+        js_file_path = json.dumps(file_path)[1:-1]
         
-        # Python 中要表示字符串 \' (即 JS 里的转义单引号)，需要写成 "\\'"
-        js_title = title.replace("'", "\\'")
-        
-        # 处理作者列表
-        js_authors_list = []
-        for a in authors:
-            safe_a = a.replace("'", "\\'")
-            js_authors_list.append(f"'{safe_a}'")
-        js_authors_str = "[" + ",".join(js_authors_list) + "]"
+        js_zotero_tag = json.dumps(prefs['ZOTERO_TAG'])[1:-1]
+        js_zotero_collection = json.dumps(prefs['ZOTERO_COLLECTION'])[1:-1]
 
-        # 2. 构建 JavaScript Payload (不使用 async IIFE，直接写)
-        js_code = f"""
-var item = new Zotero.Item('book');
-item.setField('title', '{js_title}');
-item.setField('ISBN', '{isbn}');
-
-var authorList = {js_authors_str};
-var creators = [];
-for (let a of authorList) {{
-    creators.push({{
-        creatorType: 'author', 
-        lastName: a
-    }});
-}}
-item.setCreators(creators);
-item.addTag('{ZOTERO_TAG}');
-
-await item.saveTx();
-var itemKey = item.key;
-
-await Zotero.Attachments.linkFromFile({{
-    file: '{js_pdf_path}',
-    parentItemID: item.id
-}});
-
-var libID = item.libraryID;
-var collections = await Zotero.Collections.getByLibrary(libID);
-var targetCol = null;
-for (let col of collections) {{
-    if (col.name === '{ZOTERO_COLLECTION}') {{
-        targetCol = col;
-        break;
-    }}
-}}
-if (!targetCol) {{
-    targetCol = new Zotero.Collection();
-    targetCol.name = '{ZOTERO_COLLECTION}';
-    targetCol.libraryID = libID;
-    await targetCol.saveTx();
-}}
-item.addToCollection(targetCol.id);
-await item.saveTx();
-
-return itemKey;
-        """
+        # 读取模板并替换占位符
+        js_template = self._get_js_template()
+        js_code = js_template.replace('{{title}}', js_title) \
+                             .replace('{{isbn}}', js_isbn) \
+                             .replace('{{creators}}', js_creators_json) \
+                             .replace('{{zotero_tag}}', js_zotero_tag) \
+                             .replace('{{file_path}}', js_file_path) \
+                             .replace('{{zotero_collection}}', js_zotero_collection)
 
         # 3. 发送 HTTP 请求
         headers = {'Content-Type': 'text/plain'}
-        if ZOTERO_PASS:
-            headers['Authorization'] = f'Bearer {ZOTERO_PASS}'
+        zotero_pass = prefs['ZOTERO_PASS']
+        if zotero_pass:
+            headers['Authorization'] = f'Bearer {zotero_pass}'
         req = urllib.request.Request(
-            BRIDGE_URL, 
+            prefs['BRIDGE_URL'], 
             data=js_code.encode('utf-8'), 
             headers=headers,
             method='POST'
@@ -157,4 +150,5 @@ return itemKey;
                 return item_key
         except urllib.error.HTTPError as e:
             error_body = e.read().decode('utf-8', errors='replace')
-            raise Exception(f"HTTP 错误 {e.code}: {e.reason}\n\n响应内容:\n{error_body}\n\n发送的JS代码:\n{js_code}")
+            raise Exception(f"HTTP 错误 {e.code}: {e.reason}\n\n响应内容:\n{error_body}")
+

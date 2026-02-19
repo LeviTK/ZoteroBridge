@@ -6,7 +6,7 @@ class SendToZoteroPlugin(InterfaceActionBase):
     description         = '通过本地 Debug Bridge 将书籍链接到 Zotero'
     supported_platforms = ['windows', 'osx', 'linux']
     author              = 'Gemini User'
-    version             = (1, 0, 1)
+    version             = (1, 1, 0)
     minimum_calibre_version = (5, 0, 0)
 
     # --- 关键配置 ---
@@ -15,5 +15,19 @@ class SendToZoteroPlugin(InterfaceActionBase):
     actual_plugin       = 'calibre_plugins.zotero_bridge.main:ZoteroAction'
 
     def is_customizable(self):
-        # 如果你想做配置界面（填密码等），这里返回 True
-        return False
+        # 启用配置界面
+        return True
+
+    def config_widget(self):
+        '''
+        返回一个 QWidget 用于用户自定义配置。
+        '''
+        from calibre_plugins.zotero_bridge.config import ConfigWidget
+        return ConfigWidget()
+
+    def save_settings(self, config_widget):
+        '''
+        保存用户在配置界面中做的更改。
+        '''
+        config_widget.save_settings()
+
